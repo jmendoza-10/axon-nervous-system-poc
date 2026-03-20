@@ -56,9 +56,73 @@ Requires [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3
 ./scripts/flash_esp32.sh rx /dev/ttyACM0
 ```
 
-### 2. Setup Raspberry Pis
+### 2. Flash Raspberry Pi SD Cards (from your Mac)
 
-SSH into each Pi and run:
+Use the included flasher script to prepare SD cards with headless config and auto-setup:
+
+```bash
+# Flash the command node SD card
+./scripts/flash_pi_sd.sh \
+  --role command \
+  --wifi-ssid "YourWiFi" \
+  --wifi-pass "YourPassword"
+
+# Flash Room A node
+./scripts/flash_pi_sd.sh \
+  --role room \
+  --room-id room_a \
+  --wifi-ssid "YourWiFi" \
+  --wifi-pass "YourPassword"
+
+# Flash Room B node
+./scripts/flash_pi_sd.sh \
+  --role room \
+  --room-id room_b \
+  --wifi-ssid "YourWiFi" \
+  --wifi-pass "YourPassword"
+```
+
+The script will prompt you to select the SD card and confirm before writing. Default username is `axon` (password prompted).
+
+**Options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--role` | `room` | Node role: `command` or `room` |
+| `--room-id` | `room_a` | Room identifier (room nodes only) |
+| `--hostname` | auto | Pi hostname (auto-set from role/room-id) |
+| `--user` | `axon` | Linux username |
+| `--password` | prompted | Linux password |
+| `--wifi-ssid` | — | WiFi network name |
+| `--wifi-pass` | — | WiFi password |
+| `--skip-download` | — | Skip image download if already cached |
+
+### 3. Boot & Run First-Boot Setup
+
+After inserting the SD card and powering on the Pi:
+
+```bash
+# 1. SSH into the Pi (wait ~60s for first boot)
+ssh axon@axon-command.local      # command node
+ssh axon@axon-room-a.local       # room A node
+ssh axon@axon-room-b.local       # room B node
+
+# 2. Run the first-boot setup script
+sudo bash /boot/firmware/axon-firstboot/setup.sh
+```
+
+This will automatically:
+- Install all system dependencies (Python, MQTT, Git, etc.)
+- Clone the Axon repo
+- Create a Python venv and install packages
+- Configure and start systemd services for the node's role
+- Set up Reticulum mesh networking
+
+> **Tip:** Monitor progress with `tail -f /var/log/axon-firstboot.log`
+
+### 4. Manual Setup (Alternative)
+
+If you prefer to set up Pis manually instead of using the flasher:
 
 ```bash
 # On ALL Pis - common dependencies
@@ -74,7 +138,7 @@ curl -sSL https://raw.githubusercontent.com/jmendoza-10/axon-nervous-system-poc/
 curl -sSL https://raw.githubusercontent.com/jmendoza-10/axon-nervous-system-poc/main/scripts/setup_room_node.sh | bash -s room_b
 ```
 
-### 3. Configure Reticulum Peers
+### 5. Configure Reticulum Peers
 
 On Pi #2 and Pi #3, edit `~/.reticulum/config` to add the command node:
 
@@ -87,7 +151,7 @@ On Pi #2 and Pi #3, edit `~/.reticulum/config` to add the command node:
 
 Then restart: `sudo systemctl restart axon-reticulum-bridge`
 
-### 4. Open Dashboard
+### 6. Open Dashboard
 
 Navigate to `http://<PI_1_IP>:5000` in your browser.
 
@@ -106,6 +170,7 @@ Navigate to `http://<PI_1_IP>:5000` in your browser.
 │       ├── dashboard.py           # Flask + SocketIO dashboard
 │       └── templates/index.html   # Live web UI
 └── scripts/
+    ├── flash_pi_sd.sh         # RPi SD card flasher (macOS/Linux)
     ├── setup_pi_common.sh     # Base Pi setup
     ├── setup_room_node.sh     # Room node setup + systemd
     ├── setup_command_node.sh  # Command node setup + systemd
