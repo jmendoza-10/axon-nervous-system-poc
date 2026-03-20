@@ -1,0 +1,28 @@
+menu "CSI RX Configuration"
+
+    config CSI_RX_SSID
+        string "CSI TX AP SSID to connect to"
+        default "AxonCSI"
+        help
+            SSID of the CSI transmitter soft-AP.
+
+    config CSI_RX_PASSWORD
+        string "CSI TX AP Password"
+        default "axon1234"
+        help
+            Password for the CSI transmitter soft-AP.
+
+    config CSI_UDP_TARGET_IP
+        string "UDP target IP (Raspberry Pi)"
+        default "192.168.4.100"
+        help
+            IP address of the Raspberry Pi room node to stream CSI data to.
+
+    config CSI_UDP_TARGET_PORT
+        int "UDP target port"
+        default 5500
+        range 1024 65535
+        help
+            UDP port on the Raspberry Pi listening for CSI JSON data.
+
+endmenu

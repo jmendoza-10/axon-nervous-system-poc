@@ -1,0 +1,4 @@
+flask>=3.0
+flask-socketio>=5.3
+paho-mqtt>=1.6
+rns>=0.7

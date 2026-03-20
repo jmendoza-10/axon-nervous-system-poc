@@ -1,0 +1,22 @@
+menu "CSI TX Configuration"
+
+    config CSI_TX_SSID
+        string "WiFi SSID for CSI AP"
+        default "AxonCSI"
+        help
+            SSID of the soft-AP used for CSI packet transmission.
+
+    config CSI_TX_PASSWORD
+        string "WiFi Password"
+        default "axon1234"
+        help
+            Password for the CSI soft-AP. Leave empty for open network.
+
+    config CSI_TX_CHANNEL
+        int "WiFi Channel"
+        default 6
+        range 1 13
+        help
+            WiFi channel for CSI transmission. Must match RX config.
+
+endmenu

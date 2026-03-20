@@ -1,0 +1,4 @@
+numpy>=1.24
+scipy>=1.10
+paho-mqtt>=1.6
+rns>=0.7

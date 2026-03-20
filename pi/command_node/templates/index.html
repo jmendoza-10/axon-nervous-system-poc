@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Axon Nervous System - Command Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0e17; color: #e0e6ed; }
+        .header { background: #131a2b; padding: 20px 30px; border-bottom: 2px solid #f7b731; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { font-size: 1.4em; color: #f7b731; }
+        .header .status { font-size: 0.85em; color: #6c7a8d; }
+        .header .status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+        .header .status .dot.online { background: #27ae60; }
+        .container { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 20px 30px; max-width: 1400px; margin: 0 auto; }
+        .room-card { background: #131a2b; border-radius: 12px; padding: 24px; border: 1px solid #1e2a3d; transition: border-color 0.3s; }
+        .room-card.presence { border-color: #f39c12; box-shadow: 0 0 20px rgba(243, 156, 18, 0.15); }
+        .room-card.motion { border-color: #e74c3c; box-shadow: 0 0 20px rgba(231, 76, 60, 0.2); animation: pulse 1s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.85; } }
+        .room-card h2 { font-size: 1.1em; color: #8899aa; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 1px; }
+        .indicator { display: flex; gap: 16px; margin-bottom: 16px; }
+        .indicator .badge { padding: 6px 16px; border-radius: 20px; font-size: 0.85em; font-weight: 600; }
+        .badge.presence-yes { background: rgba(243, 156, 18, 0.2); color: #f39c12; }
+        .badge.presence-no { background: rgba(108, 122, 141, 0.2); color: #6c7a8d; }
+        .badge.motion-yes { background: rgba(231, 76, 60, 0.2); color: #e74c3c; }
+        .badge.motion-no { background: rgba(108, 122, 141, 0.2); color: #6c7a8d; }
+        .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .metric { background: #0d1320; padding: 12px; border-radius: 8px; }
+        .metric .label { font-size: 0.75em; color: #6c7a8d; text-transform: uppercase; }
+        .metric .value { font-size: 1.4em; font-weight: 600; color: #e0e6ed; margin-top: 4px; }
+        .events-panel { grid-column: 1 / -1; background: #131a2b; border-radius: 12px; padding: 24px; border: 1px solid #1e2a3d; max-height: 400px; overflow-y: auto; }
+        .events-panel h2 { font-size: 1.1em; color: #8899aa; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 1px; }
+        .event-row { display: flex; gap: 16px; padding: 8px 0; border-bottom: 1px solid #1e2a3d; font-size: 0.85em; font-family: monospace; }
+        .event-row .time { color: #6c7a8d; min-width: 80px; }
+        .event-row .room { color: #f7b731; min-width: 80px; }
+        .event-row .detail { color: #e0e6ed; flex: 1; }
+        .event-row .hash { color: #3498db; min-width: 100px; text-align: right; }
+        .chain-status { grid-column: 1 / -1; background: #131a2b; border-radius: 12px; padding: 16px 24px; border: 1px solid #1e2a3d; display: flex; justify-content: space-between; align-items: center; }
+        .chain-status .valid { color: #27ae60; }
+        .chain-status .invalid { color: #e74c3c; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>AXON NERVOUS SYSTEM</h1>
+        <div class="status">
+            <span class="dot online"></span>
+            <span id="connection-status">Connecting...</span>
+        </div>
+    </div>
+
+    <div class="container">
+        <div id="rooms-container"></div>
+        <div class="chain-status">
+            <span>Evidence Chain</span>
+            <span id="chain-info">Verifying...</span>
+        </div>
+        <div class="events-panel">
+            <h2>Live Event Log</h2>
+            <div id="events-list"></div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        const rooms = {};
+
+        socket.on('connect', () => {
+            document.getElementById('connection-status').textContent = 'Live';
+        });
+
+        socket.on('disconnect', () => {
+            document.getElementById('connection-status').textContent = 'Disconnected';
+        });
+
+        socket.on('detection', (data) => {
+            rooms[data.room] = data.state;
+            renderRooms();
+            addEvent(data);
+        });
+
+        function renderRooms() {
+            const container = document.getElementById('rooms-container');
+            container.innerHTML = '';
+            for (const [name, state] of Object.entries(rooms)) {
+                const classes = ['room-card'];
+                if (state.motion) classes.push('motion');
+                else if (state.presence) classes.push('presence');
+
+                container.innerHTML += `
+                    <div class="${classes.join(' ')}">
+                        <h2>${name}</h2>
+                        <div class="indicator">
+                            <span class="badge ${state.presence ? 'presence-yes' : 'presence-no'}">
+                                ${state.presence ? 'PRESENCE' : 'EMPTY'}
+                            </span>
+                            <span class="badge ${state.motion ? 'motion-yes' : 'motion-no'}">
+                                ${state.motion ? 'MOTION' : 'STILL'}
+                            </span>
+                        </div>
+                        <div class="metrics">
+                            <div class="metric">
+                                <div class="label">Variance</div>
+                                <div class="value">${(state.variance || 0).toFixed(2)}</div>
+                            </div>
+                            <div class="metric">
+                                <div class="label">Temporal Var</div>
+                                <div class="value">${(state.temporal_var || 0).toFixed(2)}</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+        }
+
+        function addEvent(data) {
+            const list = document.getElementById('events-list');
+            const now = new Date().toLocaleTimeString();
+            const detail = data.state.presence
+                ? (data.state.motion ? 'Motion detected' : 'Presence confirmed')
+                : 'Room empty';
+
+            const row = document.createElement('div');
+            row.className = 'event-row';
+            row.innerHTML = `
+                <span class="time">${now}</span>
+                <span class="room">${data.room}</span>
+                <span class="detail">${detail} (var: ${(data.state.variance || 0).toFixed(2)})</span>
+                <span class="hash">${data.hash || ''}</span>
+            `;
+            list.insertBefore(row, list.firstChild);
+
+            // Keep last 100 events in DOM
+            while (list.children.length > 100) {
+                list.removeChild(list.lastChild);
+            }
+        }
+
+        // Verify evidence chain periodically
+        async function verifyChain() {
+            try {
+                const res = await fetch('/api/evidence/verify');
+                const data = await res.json();
+                const el = document.getElementById('chain-info');
+                if (data.valid) {
+                    el.className = 'valid';
+                    el.textContent = `Valid (${data.count} records)`;
+                } else {
+                    el.className = 'invalid';
+                    el.textContent = `BROKEN at record ${data.broken_at}`;
+                }
+            } catch (e) {
+                document.getElementById('chain-info').textContent = 'Error checking chain';
+            }
+        }
+
+        // Initial data load
+        fetch('/api/rooms').then(r => r.json()).then(data => {
+            Object.assign(rooms, data);
+            renderRooms();
+        });
+
+        setInterval(verifyChain, 10000);
+        verifyChain();
+    </script>
+</body>
+</html>
