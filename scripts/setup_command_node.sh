@@ -35,15 +35,19 @@ if [ ! -f "$HOME/.reticulum/config" ]; then
     kill %1 2>/dev/null || true
 fi
 
+# Enable transport so this node routes traffic for room nodes
+sed -i 's/enable_transport = False/enable_transport = True/' "$HOME/.reticulum/config"
+
 # Add TCP server interface if not already present
+# Must be inside the [interfaces] section with correct indentation
 if ! grep -q "TCPServerInterface" "$HOME/.reticulum/config" 2>/dev/null; then
     cat >> "$HOME/.reticulum/config" <<'RNSEOF'
 
-# Axon command node - TCP hub for room nodes
-[[Axon TCP Hub]]
-  type = TCPServerInterface
-  listen_ip = 0.0.0.0
-  listen_port = 4242
+  [[Axon TCP Hub]]
+    type = TCPServerInterface
+    interface_enabled = Yes
+    listen_ip = 0.0.0.0
+    listen_port = 4242
 RNSEOF
     echo "Added TCP hub interface to Reticulum config (port 4242)"
 fi

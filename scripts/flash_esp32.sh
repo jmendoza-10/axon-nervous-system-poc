@@ -28,15 +28,32 @@ PORT="${2:-}"
 
 # Auto-detect port if not specified
 if [ -z "$PORT" ]; then
-    if [ -e /dev/ttyACM0 ]; then
-        PORT="/dev/ttyACM0"
-    elif [ -e /dev/ttyUSB0 ]; then
-        PORT="/dev/ttyUSB0"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        # macOS: ESP32-S3 shows up as cu.usbmodem* (built-in USB) or
+        # cu.SLAB_USBtoUART / cu.usbserial-* (CP210x/CH340 USB-UART chips)
+        PORT=$(ls /dev/cu.usbmodem* /dev/cu.SLAB_USBtoUART* /dev/cu.usbserial-* 2>/dev/null | head -1)
     else
-        echo "Error: No serial port found. Connect the ESP32 and try again."
-        echo "       Or specify the port: $0 $FIRMWARE /dev/ttyXXX"
+        # Linux
+        PORT=$(ls /dev/ttyACM0 /dev/ttyUSB0 2>/dev/null | head -1)
+    fi
+
+    if [ -z "$PORT" ]; then
+        echo "Error: No ESP32 serial port found."
+        echo ""
+        if [[ "$(uname -s)" == "Darwin" ]]; then
+            echo "Available ports:"
+            ls /dev/cu.* 2>/dev/null | grep -v Bluetooth || echo "  (none)"
+        else
+            echo "Available ports:"
+            ls /dev/tty{ACM,USB}* 2>/dev/null || echo "  (none)"
+        fi
+        echo ""
+        echo "Connect the ESP32 via USB and retry, or specify the port:"
+        echo "  $0 $FIRMWARE /dev/cu.usbmodem1234"
         exit 1
     fi
+
+    echo "Auto-detected port: $PORT"
 fi
 
 # Check ESP-IDF
