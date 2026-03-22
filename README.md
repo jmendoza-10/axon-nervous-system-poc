@@ -46,8 +46,13 @@ WiFi CSI (Channel State Information) based presence and motion sensing using ESP
 Requires [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/) installed.
 
 ```bash
-# Source ESP-IDF
-. $IDF_PATH/export.sh
+# Install ESP-IDF (first time only)
+mkdir -p ~/workspace/opensource && cd ~/workspace/opensource
+git clone --recursive https://github.com/espressif/esp-idf.git
+~/workspace/opensource/esp-idf/install.sh esp32s3
+
+# Source ESP-IDF (every new shell session)
+. ~/workspace/opensource/esp-idf/export.sh
 
 # Flash transmitter
 ./scripts/flash_esp32.sh tx /dev/ttyACM0
@@ -142,20 +147,7 @@ curl -sSL https://raw.githubusercontent.com/jmendoza-10/axon-nervous-system-poc/
 curl -sSL https://raw.githubusercontent.com/jmendoza-10/axon-nervous-system-poc/main/scripts/setup_room_node.sh | bash -s room_b
 ```
 
-### 5. Configure Reticulum Peers
-
-On Pi #2 and Pi #3, edit `~/.reticulum/config` to add the command node:
-
-```ini
-[[Command Node]]
-  type = TCPClientInterface
-  target_host = <PI_1_IP_ADDRESS>
-  target_port = 4242
-```
-
-Then restart: `sudo systemctl restart axon-reticulum-bridge`
-
-### 6. Open Dashboard
+### 5. Open Dashboard
 
 Navigate to `http://<PI_1_IP>:5000` in your browser.
 

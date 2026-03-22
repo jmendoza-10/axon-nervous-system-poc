@@ -34,8 +34,19 @@ if [ ! -f "$HOME/.reticulum/config" ]; then
     rnsd &
     sleep 2
     kill %1 2>/dev/null || true
-    echo "Default Reticulum config generated at ~/.reticulum/config"
-    echo "Edit it to add the command node as a TCP peer."
+fi
+
+# Add TCP client interface to connect to command node's hub
+if ! grep -q "TCPClientInterface" "$HOME/.reticulum/config" 2>/dev/null; then
+    cat >> "$HOME/.reticulum/config" <<'RNSEOF'
+
+  [[Axon Command Node]]
+    type = TCPClientInterface
+    interface_enabled = Yes
+    target_host = axon-command.local
+    target_port = 4242
+RNSEOF
+    echo "Added TCP client interface to Reticulum config (target: axon-command.local:4242)"
 fi
 
 # Create systemd services

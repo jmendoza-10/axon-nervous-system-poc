@@ -40,7 +40,7 @@ CACHE_DIR="${SCRIPT_DIR}/../.cache"
 
 # Image URLs per board target
 IMAGE_URL_PI4="https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64-lite.img.xz"
-IMAGE_URL_PI5="https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2025-02-06/2025-02-06-raspios-bookworm-arm64-lite.img.xz"
+IMAGE_URL_PI5="https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2025-05-13/2025-05-13-raspios-bookworm-arm64-lite.img.xz"
 
 # Colors
 RED='\033[0;31m'
@@ -472,6 +472,10 @@ method=auto
 NMEOF
 chmod 600 /etc/NetworkManager/system-connections/axon-wifi.nmconnection
 
+# 2b. Activate WiFi immediately (don't wait for boot 2)
+nmcli connection reload 2>/dev/null || true
+nmcli connection up axon-wifi 2>/dev/null || true
+
 # 3. Install a systemd service so setup.sh runs automatically on boot 2
 cat > /etc/systemd/system/axon-firstboot.service <<SVCEOF
 [Unit]
@@ -581,27 +585,97 @@ WLAN_IP=\$(ip -4 addr show wlan0 2>/dev/null | awk '/inet / {print \$2}')
 if [[ -n "\$WLAN_IP" ]]; then
     ok "wlan0 up — \$WLAN_IP"
 else
-    log "  wlan0 not up yet, current interface state:"
-    ip -brief addr show 2>&1 | while IFS= read -r l; do log "  \$l"; done || true
-    log "  nmcli device status:"
-    nmcli device status 2>&1 | while IFS= read -r l; do log "  \$l"; done || true
-    fail "wlan0 has no IP — WiFi may not be configured. Check /etc/NetworkManager/system-connections/"
+    log "  wlan0 not up yet, attempting WiFi recovery..."
+
+    # Ensure regulatory domain is set and radio is unblocked
+    raspi-config nonint do_wifi_country US 2>/dev/null || true
+    rfkill unblock all 2>/dev/null || true
+
+    # Check if NM keyfile exists; if not, firstrun.sh may not have executed
+    if [[ ! -f /etc/NetworkManager/system-connections/axon-wifi.nmconnection ]]; then
+        log "  NM keyfile missing — firstrun.sh did not run, checking boot partition..."
+        if [[ -f /boot/firmware/firstrun.sh ]]; then
+            log "  Running firstrun.sh now..."
+            bash /boot/firmware/firstrun.sh || true
+        fi
+    fi
+
+    # Reload and try to bring up the connection
+    nmcli connection reload 2>/dev/null || true
+    nmcli connection up axon-wifi 2>/dev/null || true
+
+    # Wait up to 30s for an IP
+    for w in \$(seq 1 6); do
+        WLAN_IP=\$(ip -4 addr show wlan0 2>/dev/null | awk '/inet / {print \$2}')
+        [[ -n "\$WLAN_IP" ]] && break
+        sleep 5
+    done
+
+    if [[ -n "\$WLAN_IP" ]]; then
+        ok "wlan0 recovered — \$WLAN_IP"
+    else
+        log "  Current interface state:"
+        ip -brief addr show 2>&1 | while IFS= read -r l; do log "  \$l"; done || true
+        log "  nmcli device status:"
+        nmcli device status 2>&1 | while IFS= read -r l; do log "  \$l"; done || true
+        log "  rfkill list:"
+        rfkill list 2>&1 | while IFS= read -r l; do log "  \$l"; done || true
+        fail "wlan0 has no IP — WiFi recovery failed"
+    fi
 fi
 
 # ── Step 3: Network reachability ─────────────────────────────────────────────
 step "Wait for internet connectivity"
+
+# Ensure DNS is available — DHCP-assigned DNS may not be ready yet on fresh boot
+if ! grep -q '^nameserver' /etc/resolv.conf 2>/dev/null; then
+    log "  No nameservers in /etc/resolv.conf, adding fallback DNS"
+    echo "nameserver 8.8.8.8" | sudo tee -a /etc/resolv.conf > /dev/null
+fi
+
 for i in \$(seq 1 30); do
-    if ping -c 1 -W 3 github.com &>/dev/null; then
-        ok "github.com reachable (attempt \$i)"
+    # Check both github.com (for git clone) and deb.debian.org (for apt)
+    if ping -c 1 -W 3 github.com &>/dev/null && \
+       getent hosts deb.debian.org &>/dev/null; then
+        ok "github.com + deb.debian.org reachable (attempt \$i)"
         break
     fi
-    log "  Waiting for network... (\$i/30)"
+    log "  Waiting for network/DNS... (\$i/30)"
     sleep 5
     if [[ \$i -eq 30 ]]; then
         fail "No internet after 150s — check network config"
         log "Final interface state:"; ip -brief addr show || true
+        log "resolv.conf:"; cat /etc/resolv.conf || true
     fi
 done
+
+# ── Step 3b: Sync system clock ────────────────────────────────────────────────
+# RPi has no RTC battery — clock starts stale, causing apt "not valid yet" errors
+step "Sync system clock via NTP"
+log "  Clock before sync: \$(date)"
+if command -v timedatectl &>/dev/null; then
+    sudo timedatectl set-ntp true 2>/dev/null || true
+fi
+# Force an immediate sync — systemd-timesyncd may take a while on its own
+for t in \$(seq 1 15); do
+    if sudo timeout 5 /usr/lib/systemd/systemd-timesyncd 2>/dev/null; then true; fi
+    # Check if clock has been synchronized
+    if timedatectl show 2>/dev/null | grep -q "NTPSynchronized=yes"; then
+        ok "Clock synced: \$(date)"
+        break
+    fi
+    # Fallback: fetch date from an HTTP header
+    if [[ \$t -eq 5 ]]; then
+        HTTP_DATE=\$(curl -sI http://deb.debian.org 2>/dev/null | grep -i '^date:' | sed 's/^[Dd]ate: //')
+        if [[ -n "\$HTTP_DATE" ]]; then
+            sudo date -s "\$HTTP_DATE" 2>/dev/null || true
+            ok "Clock set from HTTP header: \$(date)"
+            break
+        fi
+    fi
+    sleep 2
+done
+log "  Clock after sync: \$(date)"
 
 # ── Step 4: System packages ───────────────────────────────────────────────────
 step "apt update + upgrade"
@@ -609,12 +683,22 @@ export DEBIAN_FRONTEND=noninteractive
 # --force-confdef: use default action on config conflicts (no prompt)
 # --force-confold: keep existing config if it's been modified
 APT_OPTS='-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold'
-sudo apt-get update -qq
+for attempt in 1 2 3 4 5; do
+    if sudo apt-get update -qq 2>&1; then
+        break
+    fi
+    if [ \$attempt -eq 5 ]; then
+        fail "apt-get update failed after 5 attempts"
+        exit 1
+    fi
+    log "  apt-get update failed (attempt \$attempt/5), retrying in 10s..."
+    sleep 10
+done
 sudo apt-get upgrade -y -qq \$APT_OPTS
 ok "system packages up to date"
 
 step "Install dependencies"
-sudo apt-get install -y -qq \$APT_OPTS python3-pip python3-venv mosquitto mosquitto-clients git
+sudo apt-get install -y -qq --fix-missing \$APT_OPTS python3-pip python3-venv mosquitto mosquitto-clients git
 ok "python3-pip python3-venv mosquitto git installed"
 
 # ── Step 5: Clone repo ────────────────────────────────────────────────────────

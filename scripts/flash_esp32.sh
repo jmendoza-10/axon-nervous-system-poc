@@ -11,15 +11,19 @@ usage() {
     echo ""
     echo "  tx   - Flash CSI transmitter firmware"
     echo "  rx   - Flash CSI receiver firmware"
-    echo "  port - Serial port (default: /dev/ttyUSB0 or /dev/ttyACM0)"
+    echo "  port - Serial port (auto-detected if not specified)"
     echo ""
     echo "Prerequisites:"
-    echo "  - ESP-IDF installed and sourced (. \$IDF_PATH/export.sh)"
+    echo "  - ESP-IDF installed and sourced (. ~/workspace/opensource/esp-idf/export.sh)"
     echo "  - ESP32-S3 connected via USB"
-    exit 1
+    echo ""
+    echo "Examples:"
+    echo "  $0 tx"
+    echo "  $0 rx /dev/cu.usbmodem1234"
+    exit 0
 }
 
-if [ $# -lt 1 ]; then
+if [ $# -lt 1 ] || [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
     usage
 fi
 
@@ -31,10 +35,10 @@ if [ -z "$PORT" ]; then
     if [[ "$(uname -s)" == "Darwin" ]]; then
         # macOS: ESP32-S3 shows up as cu.usbmodem* (built-in USB) or
         # cu.SLAB_USBtoUART / cu.usbserial-* (CP210x/CH340 USB-UART chips)
-        PORT=$(ls /dev/cu.usbmodem* /dev/cu.SLAB_USBtoUART* /dev/cu.usbserial-* 2>/dev/null | head -1)
+        PORT=$(ls /dev/cu.usbmodem* /dev/cu.SLAB_USBtoUART* /dev/cu.usbserial-* 2>/dev/null | head -1 || true)
     else
         # Linux
-        PORT=$(ls /dev/ttyACM0 /dev/ttyUSB0 2>/dev/null | head -1)
+        PORT=$(ls /dev/ttyACM0 /dev/ttyUSB0 2>/dev/null | head -1 || true)
     fi
 
     if [ -z "$PORT" ]; then
@@ -76,8 +80,9 @@ case "$FIRMWARE" in
         ;;
 esac
 
-# Set target to ESP32-S3
+# Set target to ESP32-S3 and clean (ensures sdkconfig.defaults are applied)
 idf.py set-target esp32s3
+idf.py fullclean
 
 # Build
 echo "Building firmware..."

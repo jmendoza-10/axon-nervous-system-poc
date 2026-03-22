@@ -16,6 +16,7 @@
 #include "esp_system.h"
 #include "nvs_flash.h"
 #include "esp_netif.h"
+#include "lwip/sockets.h"
 
 static const char *TAG = "csi_tx";
 
@@ -59,17 +60,35 @@ static void wifi_init_softap(void)
 
 static void csi_tx_task(void *pvParameters)
 {
-    /* Null data frame payload - keeps CSI channel estimation active */
     uint8_t probe_data[32] = {0};
     uint32_t seq = 0;
+
+    /* UDP broadcast to the SoftAP subnet — RX receives these frames and
+     * the CSI callback fires on each one. Avoids raw 802.11 frame injection. */
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) {
+        ESP_LOGE(TAG, "Failed to create UDP socket");
+        vTaskDelete(NULL);
+        return;
+    }
+    int broadcast = 1;
+    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
+
+    struct sockaddr_in dest = {
+        .sin_family      = AF_INET,
+        .sin_port        = htons(5501),
+        .sin_addr.s_addr = inet_addr("192.168.4.255"),
+    };
 
     ESP_LOGI(TAG, "Starting CSI TX at ~%dHz", 1000 / CSI_TX_RATE_MS);
 
     while (1) {
-        /* Send a null data frame to trigger CSI at the receiver */
-        esp_err_t ret = esp_wifi_80211_tx(WIFI_IF_AP, probe_data, sizeof(probe_data), false);
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "TX failed: %s", esp_err_to_name(ret));
+        memcpy(probe_data, &seq, sizeof(seq));  /* embed seq# for RX to detect drops */
+
+        ssize_t sent = sendto(sock, probe_data, sizeof(probe_data), 0,
+                              (struct sockaddr *)&dest, sizeof(dest));
+        if (sent < 0) {
+            ESP_LOGW(TAG, "TX failed (errno %d)", errno);
         }
 
         seq++;
