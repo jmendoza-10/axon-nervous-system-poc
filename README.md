@@ -34,7 +34,7 @@ WiFi CSI (Channel State Information) based presence and motion sensing using ESP
 
 | Component | Qty | Purpose |
 |-----------|-----|---------|
-| Raspberry Pi 4 (2GB+) | 3 | Mesh nodes + command |
+| Raspberry Pi 4 or 5 (2GB+) | 3 | Mesh nodes + command |
 | ESP32-S3 dev boards | 4 | CSI TX/RX pairs (2 per room) |
 | MicroSD cards (32GB) | 3 | Pi OS |
 | USB-C power supplies | 3+ | Pi + ESP32 power |
@@ -61,21 +61,24 @@ Requires [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3
 Use the included flasher script to prepare SD cards with headless config and auto-setup:
 
 ```bash
-# Flash the command node SD card
+# Flash the command node SD card (Pi 4)
 ./scripts/flash_pi_sd.sh \
+  --board pi4 \
   --role command \
   --wifi-ssid "YourWiFi" \
   --wifi-pass "YourPassword"
 
-# Flash Room A node
+# Flash Room A node (Pi 5)
 ./scripts/flash_pi_sd.sh \
+  --board pi5 \
   --role room \
   --room-id room_a \
   --wifi-ssid "YourWiFi" \
   --wifi-pass "YourPassword"
 
-# Flash Room B node
+# Flash Room B node (Pi 5)
 ./scripts/flash_pi_sd.sh \
+  --board pi5 \
   --role room \
   --room-id room_b \
   --wifi-ssid "YourWiFi" \
@@ -88,6 +91,7 @@ The script will prompt you to select the SD card and confirm before writing. Def
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--board` | `pi4` | Target board: `pi4` or `pi5` |
 | `--role` | `room` | Node role: `command` or `room` |
 | `--room-id` | `room_a` | Room identifier (room nodes only) |
 | `--hostname` | auto | Pi hostname (auto-set from role/room-id) |

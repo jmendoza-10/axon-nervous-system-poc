@@ -23,10 +23,10 @@ source venv/bin/activate
 
 # Install Python dependencies
 pip install --upgrade pip
-pip install -r pi/room_node/requirements.txt
+pip install --timeout 120 --retries 5 -r pi/room_node/requirements.txt
 
 # Install Reticulum
-pip install rns
+pip install --timeout 120 --retries 5 rns
 
 # Configure Reticulum
 mkdir -p "$HOME/.reticulum"
