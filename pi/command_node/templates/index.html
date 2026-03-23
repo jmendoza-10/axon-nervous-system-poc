@@ -39,6 +39,11 @@
         .chain-status { grid-column: 1 / -1; background: #131a2b; border-radius: 12px; padding: 16px 24px; border: 1px solid #1e2a3d; display: flex; justify-content: space-between; align-items: center; }
         .chain-status .valid { color: #27ae60; }
         .chain-status .invalid { color: #e74c3c; }
+        .heatmap-section { margin-top: 16px; }
+        .heatmap-section .label { font-size: 0.75em; color: #6c7a8d; text-transform: uppercase; margin-bottom: 6px; }
+        .heatmap-canvas { width: 100%; height: 120px; border-radius: 6px; display: block; image-rendering: pixelated; background: #0a0e17; }
+        .heatmap-legend { display: flex; justify-content: space-between; font-size: 0.7em; color: #6c7a8d; margin-top: 4px; }
+        .heatmap-axis { display: flex; justify-content: space-between; font-size: 0.7em; color: #3a4a5c; margin-bottom: 2px; }
     </style>
 </head>
 <body>
@@ -78,6 +83,67 @@
             rooms[data.room] = data.state;
             renderRooms();
             addEvent(data);
+            // Redraw spectrograms after DOM rebuild
+            for (const [room, rows] of Object.entries(spectrograms)) {
+                if (rows.length > 0) redrawSpectrogram(room);
+            }
+        });
+
+        // --- Heatmap / Spectrogram ---
+        const spectrograms = {};  // room -> array of rows (each row = 64 values)
+        const SPECTROGRAM_ROWS = 60;
+        const HEAT_MAX = 15.0;  // deviation value that maps to full red
+
+        function heatColor(value) {
+            const t = Math.min(value / HEAT_MAX, 1.0);
+            // Dark blue → cyan → green → yellow → orange → red
+            if (t < 0.2) {
+                const s = t / 0.2;
+                return [Math.round(s * 26), Math.round(s * 58), Math.round(26 + s * 102)];
+            } else if (t < 0.4) {
+                const s = (t - 0.2) / 0.2;
+                return [0, Math.round(58 + s * 115), Math.round(128 + s * 127)];
+            } else if (t < 0.6) {
+                const s = (t - 0.4) / 0.2;
+                return [0, Math.round(173 + s * 82), Math.round(255 - s * 255)];
+            } else if (t < 0.8) {
+                const s = (t - 0.6) / 0.2;
+                return [Math.round(s * 243), Math.round(255 - s * 98), 0];
+            } else {
+                const s = (t - 0.8) / 0.2;
+                return [243, Math.round(157 - s * 157), 0];
+            }
+        }
+
+        function redrawSpectrogram(room) {
+            const canvas = document.getElementById(`heatmap-${room}`);
+            if (!canvas) return;
+            const rows = spectrograms[room];
+            if (!rows || rows.length === 0) return;
+
+            const numCols = rows[0].length;
+            const ctx = canvas.getContext('2d');
+            const imageData = ctx.createImageData(numCols, SPECTROGRAM_ROWS);
+            const data32 = new Uint32Array(imageData.data.buffer);
+
+            for (let r = 0; r < rows.length; r++) {
+                const y = SPECTROGRAM_ROWS - rows.length + r;
+                for (let c = 0; c < numCols; c++) {
+                    const [red, green, blue] = heatColor(rows[r][c] || 0);
+                    data32[y * numCols + c] = (255 << 24) | (blue << 16) | (green << 8) | red;
+                }
+            }
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        socket.on('heatmap', (data) => {
+            const { room, values } = data;
+            if (!spectrograms[room]) spectrograms[room] = [];
+            spectrograms[room].push(values);
+            if (spectrograms[room].length > SPECTROGRAM_ROWS) {
+                spectrograms[room].shift();
+            }
+            redrawSpectrogram(room);
         });
 
         function renderRooms() {
@@ -108,6 +174,12 @@
                                 <div class="label">Temporal Var</div>
                                 <div class="value">${(state.temporal_var || 0).toFixed(2)}</div>
                             </div>
+                        </div>
+                        <div class="heatmap-section">
+                            <div class="label">CSI Subcarrier Heatmap <span style="color:#3a4a5c">(time↑ · subcarriers→)</span></div>
+                            <div class="heatmap-axis"><span>SC 1</span><span>SC 32</span><span>SC 64</span></div>
+                            <canvas class="heatmap-canvas" id="heatmap-${name}" width="64" height="60"></canvas>
+                            <div class="heatmap-legend"><span style="color:#1a3a5c">■ low</span><span style="color:#1a6b8a">■</span><span style="color:#27ae60">■</span><span style="color:#f39c12">■</span><span style="color:#e74c3c">■ high</span></div>
                         </div>
                     </div>
                 `;

@@ -131,8 +131,8 @@ static void wifi_init_sta(void)
     /* Enable CSI collection */
     wifi_csi_config_t csi_config = {
         .lltf_en = true,
-        .htltf_en = true,
-        .stbc_htltf2_en = true,
+        .htltf_en = false,         // disable HT-LTF to lock subcarrier count to 64
+        .stbc_htltf2_en = false,   // disable STBC variant (would give 192 subcarriers)
         .ltf_merge_en = true,
         .channel_filter_en = false,
         .manu_scale = false,

@@ -35,6 +35,7 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 # --- State ---
 room_states = {}
 event_log = []
+DASHBOARD_PRESENCE_HOLD = 8.0  # seconds to hold presence on dashboard before showing empty
 EVIDENCE_DIR = Path("evidence_store")
 EVIDENCE_DIR.mkdir(exist_ok=True)
 
@@ -46,7 +47,21 @@ class EvidenceLogger:
     def __init__(self, store_dir: Path):
         self.store_dir = store_dir
         self.chain_file = store_dir / "evidence_chain.jsonl"
-        self.prev_hash = "genesis"
+        self.prev_hash = self._load_last_hash()
+
+    def _load_last_hash(self) -> str:
+        try:
+            with open(self.chain_file, "r") as f:
+                last_line = None
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        last_line = line
+                if last_line is None:
+                    return "genesis"
+                return json.loads(last_line)["hash"]
+        except (FileNotFoundError, KeyError, json.JSONDecodeError):
+            return "genesis"
 
     def log_event(self, event: dict) -> dict:
         record = {
@@ -91,12 +106,22 @@ def on_mqtt_message(client, userdata, msg):
 def handle_detection(data: dict):
     room = data.get("room", "unknown")
 
+    now = time.time()
+    existing = room_states.get(room, {})
+
+    # Extend hold on positive detection; preserve hold if still within window
+    if data.get("presence"):
+        presence_until = now + DASHBOARD_PRESENCE_HOLD
+    else:
+        presence_until = existing.get("presence_until", 0)
+
     room_states[room] = {
-        "presence": data.get("presence", False),
+        "presence": now < presence_until,
         "motion": data.get("motion", False),
         "variance": data.get("variance", 0),
         "temporal_var": data.get("temporal_var", 0),
-        "last_update": time.time(),
+        "last_update": now,
+        "presence_until": presence_until,
     }
 
     record = evidence.log_event(data)
@@ -113,23 +138,67 @@ def handle_detection(data: dict):
         "hash": record["hash"][:12],
     })
 
+    if "heatmap" in data:
+        socketio.emit("heatmap", {
+            "room": room,
+            "values": data["heatmap"],
+        })
+
     log.info("Detection [%s]: presence=%s motion=%s var=%.2f hash=%s",
              room, data.get("presence"), data.get("motion"),
              data.get("variance", 0), record["hash"][:12])
 
 
 # --- Reticulum Listener ---
+class RoomAnnounceHandler:
+    """RNS requires an object with received_announce() — plain callables are ignored."""
+    aspect_filter = None
+
+    def received_announce(self, destination_hash, announced_identity, app_data):
+        log.info("Room node announced: %s", RNS.prettyhexrep(destination_hash))
+
+
 def start_reticulum():
     reticulum = RNS.Reticulum()
     identity = RNS.Identity()
 
-    # Listen for announcements from room nodes
-    RNS.Transport.register_announce_handler(announce_handler)
-    log.info("Reticulum command node initialized. Listening for room node announcements.")
+    # Create command node destination — room bridges send packets here
+    destination = RNS.Destination(
+        identity,
+        RNS.Destination.IN,
+        RNS.Destination.SINGLE,
+        "axon",
+        "command",
+    )
+    destination.set_packet_callback(on_rns_packet)
+    destination.announce()
+    log.info(
+        "Reticulum command node ready. Hash: %s",
+        RNS.prettyhexrep(destination.hash),
+    )
+
+    # Also log when room nodes announce themselves
+    RNS.Transport.register_announce_handler(RoomAnnounceHandler())
+
+    # Re-announce periodically so room nodes that start later can discover us
+    def _reannounce():
+        while True:
+            time.sleep(60)
+            destination.announce()
+            log.debug("Re-announced command node destination")
+
+    threading.Thread(target=_reannounce, daemon=True).start()
 
 
-def announce_handler(destination_hash, announced_identity, app_data):
-    log.info("Room node announced: %s", RNS.prettyhexrep(destination_hash))
+def on_rns_packet(message, packet):
+    try:
+        data = json.loads(message.decode("utf-8"))
+        if data.get("type") == "heatmap":
+            socketio.emit("heatmap", {"room": data["room"], "values": data["values"]})
+        else:
+            handle_detection(data)
+    except Exception as e:
+        log.warning("Failed to decode Reticulum packet: %s", e)
 
 
 # --- Flask Routes ---
@@ -171,9 +240,8 @@ def api_verify_chain():
 
 # --- Main ---
 def main():
-    # Start Reticulum in background
-    rns_thread = threading.Thread(target=start_reticulum, daemon=True)
-    rns_thread.start()
+    # Reticulum must init on the main thread (it sets signal handlers)
+    start_reticulum()
 
     # Start MQTT listener
     mqtt_client = mqtt.Client(client_id="axon-command-node")
