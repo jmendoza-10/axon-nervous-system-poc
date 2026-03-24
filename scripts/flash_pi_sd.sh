@@ -208,10 +208,10 @@ discover_sd_card() {
                 _id="${_cur#/dev/}"  # save before clearing
                 _cur=""
                 # Physical disks use * prefix; APFS containers use + — skip the latter
-                _size=$(echo "$line" | grep -oE '\*[0-9]+(\.[0-9]+)? [KMGT]B' | tr -d '*')
+                _size=$(echo "$line" | grep -oE '\*[0-9]+(\.[0-9]+)? [KMGT]B' | tr -d '*' || true)
                 [[ -z "$_size" ]] && continue
-                _size_num=$(echo "$_size" | grep -oE '^[0-9]+')
-                _size_unit=$(echo "$_size" | grep -oE '[A-Z]+$')
+                _size_num=$(echo "$_size" | grep -oE '^[0-9]+' || true)
+                _size_unit=$(echo "$_size" | grep -oE '[A-Z]+$' || true)
                 [[ "$_size_unit" == "TB" ]] && continue
                 [[ "$_size_unit" == "GB" && "${_size_num:-999}" -ge 256 ]] && continue
                 _name=$(diskutil info "/dev/$_id" 2>/dev/null \

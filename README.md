@@ -2,6 +2,8 @@
 
 WiFi CSI (Channel State Information) based presence and motion sensing using ESP32-S3 boards and Raspberry Pis. Detection events are forwarded over a Reticulum encrypted mesh and logged to a tamper-evident evidence chain.
 
+![Dashboard presence detection](https://jmendoza-10.github.io/assets/axon-nervous-system-poc/dashboard_presense_detect.gif)
+
 ## Architecture
 
 ```
@@ -143,6 +145,8 @@ git clone --recursive https://github.com/espressif/esp-idf.git
 ./scripts/flash_esp32.sh rx /dev/ttyACM0
 ```
 
+![Flashing ESP32 TX](https://jmendoza-10.github.io/assets/axon-nervous-system-poc/flashing_esp32_tx.gif)
+
 The RX firmware is configured with `lltf_en=true`, `htltf_en=false`, `stbc_htltf2_en=false` to lock the subcarrier count to 64 (L-LTF only). This prevents the subcarrier count from flipping between 64 and 192 mid-session, which would invalidate the baseline and force recalibration.
 
 ### 2. Flash Raspberry Pi SD Cards (from your Mac)
@@ -173,6 +177,8 @@ Use the included flasher script to prepare SD cards with headless config and aut
   --wifi-ssid "YourWiFi" \
   --wifi-pass "YourPassword"
 ```
+
+![Flashing Raspberry Pi SD card](https://jmendoza-10.github.io/assets/axon-nervous-system-poc/flashing_rpi.gif)
 
 The script will prompt you to select the SD card and confirm before writing. Default username is `axon` (password prompted).
 

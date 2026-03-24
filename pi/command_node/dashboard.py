@@ -71,8 +71,14 @@ class EvidenceLogger:
             "prev_hash": self.prev_hash,
         }
 
+        # Normalize event through JSON round-trip so the hash matches
+        # what verify computes after reading the record back from disk
+        # (avoids float representation drift, e.g. 3.0 vs 3)
+        normalized_event = json.loads(json.dumps(event, sort_keys=True))
+        record["event"] = normalized_event
+
         # Chain hash: SHA-256 of prev_hash + event JSON
-        payload = f"{self.prev_hash}:{json.dumps(event, sort_keys=True)}"
+        payload = f"{self.prev_hash}:{json.dumps(normalized_event, sort_keys=True)}"
         record["hash"] = hashlib.sha256(payload.encode()).hexdigest()
         self.prev_hash = record["hash"]
 
@@ -215,6 +221,22 @@ def api_rooms():
 @app.route("/api/events")
 def api_events():
     return jsonify(event_log[-50:])
+
+
+@app.route("/api/topology")
+def api_topology():
+    """Return node connectivity status for the topology map."""
+    now = time.time()
+    STALE_THRESHOLD = 10.0  # seconds without update = offline
+    nodes = {}
+    for room, state in room_states.items():
+        last = state.get("last_update", 0)
+        nodes[room] = {
+            "online": (now - last) < STALE_THRESHOLD,
+            "last_seen": last,
+            "age": round(now - last, 1),
+        }
+    return jsonify(nodes)
 
 
 @app.route("/api/evidence/verify")

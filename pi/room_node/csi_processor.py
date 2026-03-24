@@ -50,9 +50,28 @@ class CSIDetector:
         self.calibrating = True
         self.calibration_samples = 200
         self._calibration_count = 0  # separate counter, not capped by window_size
+        self._null_mask = None  # boolean mask to strip DC-null / guard subcarriers
+
+    @staticmethod
+    def _strip_null_subcarriers(arr: np.ndarray) -> np.ndarray:
+        """Remove DC-null and guard subcarriers (always zero in 802.11 OFDM)."""
+        mask = arr != 0.0
+        # On first packet the mask tells us which are live; for subsequent
+        # packets we keep the same indices so shapes stay consistent.
+        return arr[mask] if mask.any() else arr
 
     def update(self, amplitudes: list[float]) -> dict:
-        arr = np.array(amplitudes, dtype=np.float32)
+        raw = np.array(amplitudes, dtype=np.float32)
+
+        # Build a stable mask from the first packet, then reuse it
+        if self._null_mask is None:
+            self._null_mask = raw != 0.0
+            log.info(
+                "Null-subcarrier mask: keeping %d / %d subcarriers.",
+                int(self._null_mask.sum()), len(raw),
+            )
+        arr = raw[self._null_mask]
+
         self.window.append(arr)
 
         if self.calibrating:
@@ -104,7 +123,7 @@ class CSIDetector:
         # Motion: rapid frame-to-frame change rate over last ~50ms
         motion = bool(temporal_var > MOTION_THRESHOLD)
 
-        # Per-subcarrier absolute deviation for heatmap visualization
+        # Per-subcarrier absolute deviation for heatmap (only live subcarriers)
         heatmap = [round(float(abs(d)), 2) for d in deviation]
 
         return {
@@ -123,6 +142,7 @@ class CSIDetector:
 
 PUBLISH_INTERVAL = 1.0    # seconds between MQTT publishes
 LEAVE_CONFIRM_SECS = 10.0 # must see no presence for this long before declaring empty
+DISCONNECT_TIMEOUT = 5.0  # seconds with no UDP data before declaring room disconnected
 
 
 class RoomNode:
@@ -134,6 +154,35 @@ class RoomNode:
         # Pre-expire so an empty room at startup shows False immediately
         self._empty_since = time.time() - LEAVE_CONFIRM_SECS
         self._consecutive_presence = 0  # require sustained signal before resetting leave timer
+        self._last_packet_time = 0.0
+        self._disconnected = False
+
+    def _default_detection_payload(self) -> dict:
+        """Return a detection result with all state variables at their defaults."""
+        return {
+            "status": "disconnected",
+            "room": ROOM_ID,
+            "presence": False,
+            "motion": False,
+            "variance": 0.0,
+            "std_dev": 0.0,
+            "temporal_var": 0.0,
+            "breathing_var": 0.0,
+            "heatmap": [],
+            "timestamp": time.time(),
+        }
+
+    def _reset_state(self):
+        """Reset detector and presence tracking back to defaults."""
+        self.detector = CSIDetector()
+        self._empty_since = time.time() - LEAVE_CONFIRM_SECS
+        self._consecutive_presence = 0
+        self._disconnected = True
+        log.info("Room '%s' disconnected — state reset to defaults.", ROOM_ID)
+
+        # Publish the cleared state so downstream consumers know immediately
+        payload = json.dumps(self._default_detection_payload())
+        self.mqtt_client.publish(MQTT_TOPIC_DETECTION, payload, qos=1)
 
     def start(self):
         self.running = True
@@ -151,9 +200,11 @@ class RoomNode:
             log.info("Waiting %ds before calibration — please leave the room now.", CALIBRATION_DELAY)
             time.sleep(CALIBRATION_DELAY)
 
-        # Start UDP listener
+        # Start UDP listener and disconnect watchdog
         udp_thread = threading.Thread(target=self._udp_listener, daemon=True)
         udp_thread.start()
+        watchdog_thread = threading.Thread(target=self._disconnect_watchdog, daemon=True)
+        watchdog_thread.start()
 
         log.info("Room node '%s' started. Listening on UDP port %d", ROOM_ID, UDP_LISTEN_PORT)
 
@@ -167,6 +218,17 @@ class RoomNode:
         self.running = False
         self.mqtt_client.loop_stop()
         log.info("Room node stopped.")
+
+    def _disconnect_watchdog(self):
+        """Monitor for data timeout and reset state when the room disconnects."""
+        while self.running:
+            time.sleep(1)
+            if (
+                self._last_packet_time > 0
+                and not self._disconnected
+                and time.time() - self._last_packet_time > DISCONNECT_TIMEOUT
+            ):
+                self._reset_state()
 
     def _udp_listener(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -187,6 +249,11 @@ class RoomNode:
             except (json.JSONDecodeError, UnicodeDecodeError):
                 log.warning("Bad packet from %s", addr)
                 continue
+
+            self._last_packet_time = time.time()
+            if self._disconnected:
+                self._disconnected = False
+                log.info("Room '%s' reconnected — recalibrating.", ROOM_ID)
 
             # Publish raw CSI to MQTT
             self.mqtt_client.publish(MQTT_TOPIC_RAW, data, qos=0)
