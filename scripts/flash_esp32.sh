@@ -7,35 +7,43 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 usage() {
-    echo "Usage: $0 <tx|rx> --wifi-ssid <SSID> --wifi-pass <PASSWORD> [options]"
+    echo "Usage: $0 <tx|rx|passive> [options]"
     echo ""
-    echo "  tx   - Flash CSI transmitter firmware"
-    echo "  rx   - Flash CSI receiver firmware"
+    echo "  tx      - Flash CSI transmitter firmware (requires WiFi creds)"
+    echo "  rx      - Flash CSI receiver firmware (requires WiFi creds)"
+    echo "  passive - Flash passive CSI sniffer firmware (no WiFi creds needed)"
     echo ""
-    echo "Required:"
+    echo "Required for tx/rx:"
     echo "  --wifi-ssid <ssid>  WiFi network name (ESP32 must join the same network as the Pi)"
     echo "  --wifi-pass <pass>  WiFi password"
     echo ""
     echo "Optional:"
-    echo "  --port <port>       Serial port (auto-detected if not specified)"
-    echo "  --pi-host <host>    Target Pi hostname/IP for CSI UDP stream (rx only, default: axon-room-a.local)"
+    echo "  --port <port>             Serial port (auto-detected if not specified)"
+    echo "  --pi-host <host>          Target Pi hostname/IP for CSI UDP stream (rx only, default: axon-room-a.local)"
+    echo "  --anchor-mac <mac>        Anchor AP BSSID to filter CSI (passive only, e.g. aa:bb:cc:dd:ee:ff)"
+    echo "  --channel <ch>            WiFi channel to monitor (passive only, default: 6)"
     echo ""
     echo "Prerequisites:"
     echo "  1. ESP-IDF installed and sourced:  . ~/workspace/opensource/esp/esp-idf/export.sh"
     echo "  2. ESP32-S3 connected via USB"
     echo ""
-    echo "Each room needs two ESP32-S3 boards flashed to the same WiFi network:"
+    echo "Active mode (tx/rx) — each room needs two ESP32-S3 boards:"
     echo "  - TX: broadcasts packets that create CSI signatures"
     echo "  - RX: captures CSI from TX and streams it to the room Pi via UDP :5500"
     echo ""
+    echo "Passive mode — single ESP32-S3, no WiFi association required:"
+    echo "  - Sniffs ambient frames from anchor AP in promiscuous mode"
+    echo "  - Outputs CSI JSON over UART (USB serial)"
+    echo "  - Run scripts/passive_serial_bridge.py on your laptop to forward to Pi"
+    echo ""
     echo "Examples:"
-    echo "  # Room A pair (Pi at axon-room-a.local)"
+    echo "  # Room A active pair (Pi at axon-room-a.local)"
     echo "  $0 tx --wifi-ssid MyWiFi --wifi-pass secret"
     echo "  $0 rx --wifi-ssid MyWiFi --wifi-pass secret --pi-host axon-room-a.local"
     echo ""
-    echo "  # Room B pair (Pi at axon-room-b.local)"
-    echo "  $0 tx --wifi-ssid MyWiFi --wifi-pass secret"
-    echo "  $0 rx --wifi-ssid MyWiFi --wifi-pass secret --pi-host axon-room-b.local"
+    echo "  # Passive sniffer (Phase 2)"
+    echo "  $0 passive --anchor-mac aa:bb:cc:dd:ee:ff --channel 6"
+    echo "  # Then on laptop: python3 scripts/passive_serial_bridge.py --pi-host axon-room-a.local"
     echo ""
     echo "  # Specify serial port manually"
     echo "  $0 tx --wifi-ssid MyWiFi --wifi-pass secret --port /dev/cu.usbmodem1234"
@@ -53,26 +61,31 @@ PORT=""
 WIFI_SSID=""
 WIFI_PASS=""
 PI_HOST="axon-room-a.local"
+ANCHOR_MAC=""
+CHANNEL="6"
 
 # Parse named arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --port)      PORT="$2";      shift 2 ;;
-        --wifi-ssid) WIFI_SSID="$2"; shift 2 ;;
-        --wifi-pass) WIFI_PASS="$2"; shift 2 ;;
-        --pi-host)   PI_HOST="$2";   shift 2 ;;
+        --port)        PORT="$2";       shift 2 ;;
+        --wifi-ssid)   WIFI_SSID="$2";  shift 2 ;;
+        --wifi-pass)   WIFI_PASS="$2";  shift 2 ;;
+        --pi-host)     PI_HOST="$2";    shift 2 ;;
+        --anchor-mac)  ANCHOR_MAC="$2"; shift 2 ;;
+        --channel)     CHANNEL="$2";    shift 2 ;;
         *) echo "Unknown argument: $1"; usage ;;
     esac
 done
 
-# Require WiFi credentials — without these the ESP32 can't join the network
-# and will silently fail to produce any CSI data
-if [ -z "$WIFI_SSID" ] || [ -z "$WIFI_PASS" ]; then
-    echo "Error: --wifi-ssid and --wifi-pass are required."
-    echo "  The ESP32 must connect to the same WiFi network as the Raspberry Pi."
-    echo ""
-    echo "  $0 $FIRMWARE --wifi-ssid <SSID> --wifi-pass <PASSWORD>"
-    exit 1
+# Passive mode doesn't need WiFi credentials
+if [[ "$FIRMWARE" != "passive" ]]; then
+    if [ -z "$WIFI_SSID" ] || [ -z "$WIFI_PASS" ]; then
+        echo "Error: --wifi-ssid and --wifi-pass are required for $FIRMWARE firmware."
+        echo "  The ESP32 must connect to the same WiFi network as the Raspberry Pi."
+        echo ""
+        echo "  $0 $FIRMWARE --wifi-ssid <SSID> --wifi-pass <PASSWORD>"
+        exit 1
+    fi
 fi
 
 # Auto-detect port if not specified
@@ -117,16 +130,35 @@ case "$FIRMWARE" in
         echo "=== Flashing CSI Receiver to $PORT ==="
         cd "$PROJECT_DIR/esp32/csi_rx"
         ;;
+    passive)
+        echo "=== Flashing Passive CSI Sniffer to $PORT ==="
+        cd "$PROJECT_DIR/esp32/csi_passive"
+        ;;
     *)
         usage
         ;;
 esac
 
-# Write sdkconfig.defaults with WiFi credentials if provided
+# Write sdkconfig.defaults with build-time config
 DEFAULTS_FILE="sdkconfig.defaults"
 
-if [ -n "$WIFI_SSID" ]; then
-    # Resolve Pi hostname to IP (firmware uses inet_addr which needs an IP)
+if [[ "$FIRMWARE" == "passive" ]]; then
+    # Passive mode: write anchor MAC and channel; no WiFi credentials needed
+    EXISTING=$(grep -v "^CONFIG_CSI_ANCHOR_MAC\|^CONFIG_CSI_CHANNEL" "$DEFAULTS_FILE" 2>/dev/null || true)
+    {
+        echo "$EXISTING"
+        if [ -n "$ANCHOR_MAC" ]; then
+            echo "CONFIG_CSI_ANCHOR_MAC=\"${ANCHOR_MAC}\""
+        fi
+        echo "CONFIG_CSI_CHANNEL=${CHANNEL}"
+    } > "$DEFAULTS_FILE.tmp" && mv "$DEFAULTS_FILE.tmp" "$DEFAULTS_FILE"
+    echo "Passive sniffer config: anchor_mac=${ANCHOR_MAC:-<all>}  channel=${CHANNEL}"
+    echo ""
+    echo "IMPORTANT: After flashing, run the serial bridge on your laptop:"
+    echo "  python3 $SCRIPT_DIR/passive_serial_bridge.py --pi-host <room-pi-host>"
+
+elif [ -n "$WIFI_SSID" ]; then
+    # Active mode: resolve Pi hostname and write WiFi credentials
     PI_IP=""
     if [[ "$FIRMWARE" == "rx" ]]; then
         echo "Resolving $PI_HOST..."
