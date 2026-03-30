@@ -1,0 +1,14 @@
+# CSI Passive Sniffer defaults for ESP32-S3-N16R8
+CONFIG_ESP_WIFI_CSI_ENABLED=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# Anchor AP: set to BSSID of the room AP whose beacons will provide CSI.
+# Find it with: iw dev wlan0 scan | grep -A5 "SETUP-10EC" | grep BSS
+CONFIG_CSI_ANCHOR_MAC="00:00:00:00:00:00"
+
+# Channel your anchor AP broadcasts on (check router admin or WiFi scanner)
+CONFIG_CSI_CHANNEL=6
+
+# Pi room node IP (used for Phase 2b UDP streaming)
+CONFIG_CSI_UDP_TARGET_IP="192.168.0.226"

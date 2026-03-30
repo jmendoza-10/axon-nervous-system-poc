@@ -1,0 +1,36 @@
+menu "CSI Passive Configuration"
+
+    config CSI_ANCHOR_MAC
+        string "Anchor AP BSSID (MAC address)"
+        default "00:00:00:00:00:00"
+        help
+            MAC address of the anchor AP whose frames will be used for CSI.
+            Format: xx:xx:xx:xx:xx:xx (lowercase hex). Only frames from this
+            source MAC are forwarded to the output; all others are discarded.
+            Set this to the BSSID of the home AP in the monitored room.
+
+    config CSI_CHANNEL
+        int "WiFi channel to monitor"
+        default 6
+        range 1 13
+        help
+            802.11 2.4 GHz channel to lock to. Must match the channel your
+            anchor AP broadcasts on. Check your router settings or use a
+            WiFi scanner to confirm.
+
+    config CSI_UDP_TARGET_IP
+        string "UDP target IP (Raspberry Pi)"
+        default "192.168.0.226"
+        help
+            IP address of the Raspberry Pi room node. Used when the ESP32
+            has network connectivity (Phase 2b). Ignored in Phase 2a
+            bench-test mode where output goes to UART.
+
+    config CSI_UDP_TARGET_PORT
+        int "UDP target port"
+        default 5500
+        range 1024 65535
+        help
+            UDP port on the Raspberry Pi listening for CSI JSON data.
+
+endmenu

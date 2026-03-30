@@ -254,7 +254,7 @@
         // --- Topology Map (compact header widget) ---
         function renderTopology(topoData) {
             const svg = document.getElementById('topo-svg');
-            const roomNames = Object.keys(topoData);
+            const roomNames = Object.keys(topoData).sort();
 
             // Layout: [Room A]---[CMD]---[Room B]  horizontally at y=20
             const cy = 20;
