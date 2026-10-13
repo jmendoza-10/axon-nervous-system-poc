@@ -38,15 +38,15 @@ usage() {
     echo ""
     echo "Examples:"
     echo "  # Room A active pair (Pi at axon-room-a.local)"
-    echo "  $0 tx --wifi-ssid MyWiFi --wifi-pass secret"
-    echo "  $0 rx --wifi-ssid MyWiFi --wifi-pass secret --pi-host axon-room-a.local"
+    echo "  $0 tx --wifi-ssid YOUR_SSID --wifi-pass YOUR_PASSWORD"
+    echo "  $0 rx --wifi-ssid YOUR_SSID --wifi-pass YOUR_PASSWORD --pi-host axon-room-a.local"
     echo ""
     echo "  # Passive sniffer (Phase 2)"
     echo "  $0 passive --anchor-mac aa:bb:cc:dd:ee:ff --channel 6"
     echo "  # Then on laptop: python3 scripts/passive_serial_bridge.py --pi-host axon-room-a.local"
     echo ""
     echo "  # Specify serial port manually"
-    echo "  $0 tx --wifi-ssid MyWiFi --wifi-pass secret --port /dev/cu.usbmodem1234"
+    echo "  $0 tx --wifi-ssid YOUR_SSID --wifi-pass YOUR_PASSWORD --port /dev/cu.usbmodem1234"
     exit 0
 }
 

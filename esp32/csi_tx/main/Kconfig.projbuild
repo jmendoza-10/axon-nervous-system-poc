@@ -2,15 +2,18 @@ menu "CSI TX Configuration"
 
     config CSI_TX_SSID
         string "WiFi SSID for CSI AP"
-        default "AxonCSI"
+        default "YOUR_SSID"
         help
-            SSID of the soft-AP used for CSI packet transmission.
+            SSID of the Wi-Fi network the transmitter joins. Replace YOUR_SSID
+            via menuconfig (or scripts/flash_esp32.sh --wifi-ssid) before flashing.
 
     config CSI_TX_PASSWORD
         string "WiFi Password"
-        default "axon1234"
+        default "YOUR_PASSWORD"
         help
-            Password for the CSI soft-AP. Leave empty for open network.
+            Passphrase for that Wi-Fi network. Replace YOUR_PASSWORD via
+            menuconfig (or scripts/flash_esp32.sh --wifi-pass) before flashing.
+            Leave empty for an open network.
 
 
 endmenu

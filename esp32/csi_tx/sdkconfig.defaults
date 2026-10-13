@@ -2,6 +2,9 @@
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 
-# Home WiFi — TX joins as STA so RX can reach the Pi on the same subnet
-CONFIG_CSI_TX_SSID="SETUP-10EC"
-CONFIG_CSI_TX_PASSWORD="badge5585detail"
+# Home Wi-Fi — TX joins as STA so RX can reach the Pi on the same subnet.
+# Replace YOUR_SSID / YOUR_PASSWORD before building:
+#   idf.py menuconfig  →  CSI TX Configuration
+# or pass --wifi-ssid / --wifi-pass to scripts/flash_esp32.sh.
+CONFIG_CSI_TX_SSID="YOUR_SSID"
+CONFIG_CSI_TX_PASSWORD="YOUR_PASSWORD"
