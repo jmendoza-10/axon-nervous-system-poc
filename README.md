@@ -1,314 +1,199 @@
-# Axon Nervous System - POC
+# Axon Nervous System
 
-WiFi CSI (Channel State Information) based presence and motion sensing using ESP32-S3 boards and Raspberry Pis. Detection events are forwarded over a Reticulum encrypted mesh and logged to a tamper-evident evidence chain.
+A personal proof of concept for Wi-Fi CSI presence and motion sensing on ESP32-S3. A room node turns Channel State Information from an ESP32-S3 into presence and motion flags. A command node can show those flags on a small dashboard.
 
 ![Dashboard presence detection](https://github.com/jmendoza-10/axon-nervous-system-poc/releases/download/v0.1.0/dashboard_presense_detect_compressed.gif)
 
-## Architecture
+## Hardware
 
-```
-┌──────────────────────────────────────────────┐
-│           Pi #1 — COMMAND NODE               │
-│  • Reticulum TCP hub (:4242)                 │
-│  • Web dashboard + SocketIO (:5000)          │
-│  • Evidence chain logger (SHA-256 chained)   │
-└───────────────┬──────────────────────────────┘
-                │ Reticulum (encrypted TCP)
-       ┌────────┴────────┐
-       ▼                 ▼
-┌─────────────┐   ┌─────────────┐
-│  Pi #2      │   │  Pi #3      │
-│  Room A     │   │  Room B     │
-│  • MQTT     │   │  • MQTT     │
-│  • CSI proc │   │  • CSI proc │
-│  • RNS brdg │   │  • RNS brdg │
-└──────┬──────┘   └──────┬──────┘
-       │                 │
-  ┌────┴────┐       ┌────┴────┐
-  │ESP32-TX │       │ESP32-TX │
-  │ESP32-RX │       │ESP32-RX │
-  └─────────┘       └─────────┘
-```
+| Component | Role |
+|-----------|------|
+| ESP32-S3 dev board (active pair) | One transmitter and one receiver per room |
+| ESP32-S3 dev board (passive) | One sniffer per room, no association |
+| Raspberry Pi 4 or 5 | Room node (`csi_processor.py`) and, optionally, the command-node dashboard |
 
-### Data flow
+Active mode uses a TX/RX pair on the same Wi-Fi network as the room Pi. Passive mode uses one board in promiscuous mode. A laptop serial bridge forwards its UART JSON, because `WIFI_MODE_NULL` has no network association.
 
-```
-ESP32-TX  →  (WiFi probe packets)  →  ESP32-RX
-                                           │ UDP JSON (:5500)
-                                           ▼
-                                    csi_processor.py
-                                    (presence/motion detection)
-                                           │ MQTT localhost
-                                           ▼
-                                    reticulum_bridge.py
-                                    (strips heatmap, sends 2 RNS packets)
-                                           │ Reticulum E2E encrypted
-                                           ▼
-                                    dashboard.py (command node)
-                                    (on_rns_packet → SocketIO emit)
-                                           │ WebSocket
-                                           ▼
-                                    Browser dashboard
-```
+## Active and passive modes
 
-### How Reticulum is used
+Both firmwares lock CSI to the **legacy long training field (L-LTF)**: `lltf_en = true`, `htltf_en = false`, `stbc_htltf2_en = false`. That keeps the capture at **64 subcarriers**. Enabling HT-LTF or STBC would change the count (the STBC path is 192) and force the detector to drop its baseline.
 
-Reticulum is the **inter-Pi transport**, not an MQTT wrapper. MQTT runs only on `localhost` inside each room Pi as IPC between `csi_processor` and `reticulum_bridge` — it never leaves the Pi.
+**Active.** `esp32/csi_tx` joins the network as a station and sends a 32-byte UDP broadcast every `CSI_TX_RATE_MS` (10 ms, about 100 Hz) to port 5501. `esp32/csi_rx` joins the same network, computes amplitude `sqrt(I² + Q²)` for each L-LTF subcarrier, and streams one JSON object per packet to the room Pi on UDP port 5500 (`CONFIG_CSI_UDP_TARGET_PORT`).
 
-The bridge picks up each detection from local MQTT and sends it as a Reticulum packet to the command node. Reticulum provides **end-to-end encryption automatically**: every packet is encrypted to the destination's X25519 public key (+ AES-128). The command node announces its destination hash (a fingerprint of its public key) every 60 seconds; room bridges receive the announce, store that hash, and use it to encrypt and address all subsequent packets.
+**Passive.** `esp32/csi_passive` starts in `WIFI_MODE_NULL`, locks to `CONFIG_CSI_CHANNEL`, turns on promiscuous mode, and keeps CSI frames whose source MAC matches `CONFIG_CSI_ANCHOR_MAC`. It prints the same JSON shape on UART. The firmware header describes anchor beacons as a roughly 10 Hz baseline, with extra frames when the AP carries data. `scripts/passive_serial_bridge.py` reads that serial stream and forwards datagrams to the room Pi. The Pi can also drop non-anchor frames by setting `ANCHOR_MAC` to the AP BSSID; an empty `ANCHOR_MAC` accepts every source (active mode).
 
-Two separate RNS packets are sent per detection:
-1. **Detection packet** — presence/motion/variance fields (~200 bytes, fits the 500-byte MTU)
-2. **Heatmap packet** — per-subcarrier deviation quantized to 0–15 integers (~220 bytes)
+## Detection algorithm
 
-The heatmap must be split out because the full float array would exceed Reticulum's 500-byte MTU.
+`pi/room_node/csi_processor.py` keeps a time-based history of amplitude vectors and publishes on MQTT topic `axon/detection` at most once per `PUBLISH_INTERVAL` (1.0 s).
 
-## Detection Algorithm
+### Windows and thresholds
+
+| Constant | Value | What the code does with it |
+|----------|-------|----------------------------|
+| `WINDOW_DURATION_SECS` | 30.0 s | Rolling history. Samples older than this are dropped. |
+| `MOTION_WINDOW_SECS` | 0.5 s | Frame-to-frame change used for motion. Needs at least 2 samples in the window; otherwise temporal variance is 0. |
+| `BREATHING_WINDOW_SECS` | 13.0 s | Slow change published as `breathing_var`. Needs at least 10 samples; otherwise the value is 0. |
+| `PRESENCE_THRESHOLD` | 6.0 | Presence when the variance of `(sample − baseline)` exceeds this. |
+| `MOTION_THRESHOLD` | 2.5 | Motion when the mean per-subcarrier variance inside the 0.5 s window exceeds this. |
+| `BREATHING_THRESHOLD` | 1.5 | Named constant in the processor. Presence and motion decisions use 6.0 and 2.5. `breathing_var` is computed and included in the payload. |
+| `MOTION_RATE_GATE_HZ` | 30.0 | Motion is disabled while the estimated sample rate is below 30 Hz. |
+
+The rate estimate is the reciprocal of the mean of the last 20 inter-packet gaps. Gaps of 0 s or of 2.0 s and longer are ignored. A rate of 0.0 (not enough gaps yet) leaves motion enabled. Motion is cleared when `0 < rate < 30`.
+
+The first packet builds a null-subcarrier mask: bins whose amplitude is 0.0 are removed, and later packets reuse that mask. Variance is computed on the bins that remain.
 
 ### Calibration
 
-On startup the processor waits `CALIBRATION_DELAY=20s` (configurable via env var) before beginning to collect samples, giving time to vacate the room. It then collects 200 samples (~2s) to compute a per-subcarrier baseline from the empty room. Detection only begins after calibration completes.
+`CALIBRATION_DELAY` is 20 seconds (`CALIBRATION_DELAY` env var overrides it). On startup the process sleeps that long and asks you to leave the room. UDP listening starts after the sleep.
 
-If the ESP32 reconnects and changes the subcarrier count, calibration resets automatically.
+The detector then counts arrivals. While the count is below `CALIBRATION_SAMPLES` (200) it reports `calibrating`. On the 200th sample it sets the baseline to the mean of the amplitude vectors still inside the 30 s window, then reports `calibrated`. At about 10 Hz those 200 samples span about 20 s, so they all sit inside the window. If packets arrive slower than the window can hold, samples older than 30 s are already gone and the mean uses only what remains. The counter still waits for 200 arrivals.
 
-### Presence detection
+If a later packet has a different subcarrier count, the window, baseline, mask, and calibration counter reset.
 
-Per-sample deviation from the empty-room baseline is computed across all 64 subcarriers. The variance of that deviation vector is compared against `PRESENCE_THRESHOLD=8.0`. A 10-second **leave confirmation** timer prevents false empties: once presence is detected, the room must show no presence for 10 consecutive seconds before being declared empty.
+### Empty-room hold and disconnect
 
-### Motion detection
+After calibration, three active results in a row with presence set clear the empty timer. When presence then goes false, the published flag stays true until `LEAVE_CONFIRM_SECS` (10.0 s) of absence. If no UDP packet arrives for `DISCONNECT_TIMEOUT` (5.0 s), the node publishes a disconnected payload and starts calibration over on the next packet.
 
-Motion uses the **temporal variance** over the last 5 samples (~50ms at 100Hz) — the mean per-subcarrier variance across those frames. This measures frame-to-frame change rate directly, making it responsive to actual movement without being confused by static presence (someone standing still). Threshold: `MOTION_THRESHOLD=3.0`.
+`ROOM_ID` (default `room_a`), `UDP_LISTEN_PORT` (default 5500), `CALIBRATION_DELAY`, and `ANCHOR_MAC` are read from the environment when the script starts.
 
-### Heatmap / spectrogram
+## Wi-Fi credentials
 
-Each detection payload includes a 64-element array of per-subcarrier absolute deviations from baseline. The dashboard accumulates 60 rows of these (60 seconds) and renders them as a scrolling spectrogram: time flows upward, columns are subcarriers 1–64, color encodes deviation magnitude (dark blue = low, red = high, `HEAT_MAX=15.0`).
-
-### Key parameters (csi_processor.py)
-
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| `WINDOW_SIZE` | 500 | Sliding window for baseline comparison (~5s) |
-| `PRESENCE_THRESHOLD` | 8.0 | Variance above baseline to declare presence |
-| `MOTION_THRESHOLD` | 3.0 | Temporal variance threshold for motion |
-| `MOTION_WINDOW` | 5 | Samples for motion measurement (~50ms) |
-| `BREATHING_WINDOW` | 400 | Samples for slow temporal variance (~4s) |
-| `CALIBRATION_DELAY` | 20 | Seconds before calibration starts |
-| `LEAVE_CONFIRM_SECS` | 10.0 | Sustained absence before declaring empty |
-| `PUBLISH_INTERVAL` | 1.0 | MQTT publish rate (Hz) |
-
-## Evidence Chain
-
-All detection events are appended to `evidence_store/evidence_chain.jsonl` on the command node. Each record includes:
-
-```json
-{
-  "seq": 42,
-  "timestamp": "2026-03-23T05:07:13.000Z",
-  "event": { "room": "room_a", "presence": true, ... },
-  "prev_hash": "abc123...",
-  "hash": "def456..."
-}
-```
-
-The hash is `SHA-256(prev_hash + ":" + JSON(event))`, forming a chain where any tampering breaks all subsequent hashes. The dashboard verifies the chain every 10 seconds via `/api/evidence/verify`. The chain survives service restarts — on startup the logger reads the last hash from the file and continues the chain from there.
-
-The deploy script resets the chain (`rm evidence_chain.jsonl`) before each deployment so a fresh baseline produces a valid chain from genesis.
-
-## Hardware
-
-| Component | Qty | Purpose |
-|-----------|-----|---------|
-| Raspberry Pi 4 or 5 (2GB+) | 3 | Mesh nodes + command |
-| ESP32-S3 dev boards | 4 | CSI TX/RX pairs (2 per room) |
-| MicroSD cards (32GB) | 3 | Pi OS |
-| USB-C power supplies | 3+ | Pi + ESP32 power |
-
-## Quick Start
-
-### 1. Flash ESP32s (from your dev machine)
-
-Requires [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/) installed.
+Committed defaults use the placeholders `YOUR_SSID` and `YOUR_PASSWORD`. Set the real network before flashing.
 
 ```bash
-# Install ESP-IDF (first time only)
-mkdir -p ~/workspace/opensource && cd ~/workspace/opensource
-git clone --recursive https://github.com/espressif/esp-idf.git
-~/workspace/opensource/esp-idf/install.sh esp32s3
+. $IDF_PATH/export.sh
+cd esp32/csi_rx    # or esp32/csi_tx
+idf.py set-target esp32s3
+idf.py menuconfig
+```
 
-# Source ESP-IDF (every new shell session)
-. ~/workspace/opensource/esp-idf/export.sh
+In menuconfig, open **CSI RX Configuration** or **CSI TX Configuration** and replace the SSID and password. On the receiver, set **UDP target IP (Raspberry Pi)** to the room Pi (`CONFIG_CSI_UDP_TARGET_IP`; the committed value is `0.0.0.0`, which means unset). Save and exit, then build. `scripts/flash_esp32.sh` writes the same keys from `--wifi-ssid`, `--wifi-pass`, and `--pi-host`.
 
-# Flash transmitter
-./scripts/flash_esp32.sh tx /dev/ttyACM0
+Passive firmware has no SSID. Set the anchor BSSID and channel under **CSI Passive Configuration**, or pass `--anchor-mac` and `--channel` to the flash script.
 
-# Flash receiver (plug in second board)
-./scripts/flash_esp32.sh rx /dev/ttyACM0
+## Validation
+
+`scripts/validate_passive.py` listens for active CSI on UDP port 5500 and passive CSI on UDP port 5501, runs two copies of the detector, and writes a CSV. The script defines pass targets for that comparison. Results are not yet published.
+
+## Mesh transport & logging
+
+Room Pis reach the command node over Reticulum, which encrypts each packet to the destination identity. MQTT stays on `localhost:1883` as the handoff between `csi_processor.py` and `reticulum_bridge.py` (`axon/csi/raw`, `axon/detection`).
+
+The bridge sends two packets to the command destination. The detection packet omits the heatmap, because the float array exceeds Reticulum's 500-byte MTU. The heatmap packet carries the same room with each bin quantized to an integer from 0 to 15. The command node announces that destination every 60 seconds. Until a room bridge has seen the announce, it drops detections. The command hub listens on TCP port 4242; the dashboard is `http://axon-command.local:5000`.
+
+Each accepted detection is appended to `evidence_store/evidence_chain.jsonl`. The record hash is SHA-256 of `prev_hash + ":" + JSON(event)` with sorted keys. The first `prev_hash` is `genesis`, and a restart continues from the last line of the file. The dashboard calls `/api/evidence/verify` every 10 seconds. `scripts/deploy.sh` deletes the chain file on the command node before a deploy.
+
+The dashboard keeps 60 spectrogram rows and paints deviation against `HEAT_MAX` (15.0).
+
+## Quick start
+
+### Flash the ESP32-S3
+
+Requires [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/) for `esp32s3`.
+
+```bash
+./scripts/flash_esp32.sh tx --wifi-ssid YOUR_SSID --wifi-pass YOUR_PASSWORD
+./scripts/flash_esp32.sh rx --wifi-ssid YOUR_SSID --wifi-pass YOUR_PASSWORD --pi-host axon-room-a.local
+./scripts/flash_esp32.sh passive --anchor-mac aa:bb:cc:dd:ee:ff --channel 6
 ```
 
 ![Flashing ESP32 TX](https://github.com/jmendoza-10/axon-nervous-system-poc/releases/download/v0.1.0/flashing_esp32_tx_compressed.gif)
 
-The RX firmware is configured with `lltf_en=true`, `htltf_en=false`, `stbc_htltf2_en=false` to lock the subcarrier count to 64 (L-LTF only). This prevents the subcarrier count from flipping between 64 and 192 mid-session, which would invalidate the baseline and force recalibration.
+For a passive board, run `scripts/passive_serial_bridge.py --pi-host <room-pi>` on the laptop that has the USB serial port.
 
-### 2. Flash Raspberry Pi SD Cards (from your Mac)
-
-Use the included flasher script to prepare SD cards with headless config and auto-setup:
+### Flash a Raspberry Pi SD card
 
 ```bash
-# Flash the command node SD card (Pi 4)
 ./scripts/flash_pi_sd.sh \
   --board pi4 \
   --role command \
-  --wifi-ssid "YourWiFi" \
-  --wifi-pass "YourPassword"
+  --wifi-ssid YOUR_SSID \
+  --wifi-pass YOUR_PASSWORD
 
-# Flash Room A node (Pi 5)
 ./scripts/flash_pi_sd.sh \
   --board pi5 \
   --role room \
   --room-id room_a \
-  --wifi-ssid "YourWiFi" \
-  --wifi-pass "YourPassword"
-
-# Flash Room B node (Pi 5)
-./scripts/flash_pi_sd.sh \
-  --board pi5 \
-  --role room \
-  --room-id room_b \
-  --wifi-ssid "YourWiFi" \
-  --wifi-pass "YourPassword"
+  --wifi-ssid YOUR_SSID \
+  --wifi-pass YOUR_PASSWORD
 ```
 
 ![Flashing Raspberry Pi SD card](https://github.com/jmendoza-10/axon-nervous-system-poc/releases/download/v0.1.0/flashing_rpi_compressed.gif)
 
-The script will prompt you to select the SD card and confirm before writing. Default username is `axon` (password prompted).
-
-**Options:**
+The script asks which disk to write and prompts for the Linux password when `--password` is omitted. The default user is `axon`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--board` | `pi4` | Target board: `pi4` or `pi5` |
-| `--role` | `room` | Node role: `command` or `room` |
-| `--room-id` | `room_a` | Room identifier (room nodes only) |
-| `--hostname` | auto | Pi hostname (auto-set from role/room-id) |
+| `--board` | `pi4` | `pi4` or `pi5` |
+| `--role` | `room` | `command` or `room` |
+| `--room-id` | `room_a` | Room identifier for a room node |
+| `--hostname` | auto | Hostname derived from role and room id |
 | `--user` | `axon` | Linux username |
 | `--password` | prompted | Linux password |
-| `--wifi-ssid` | — | WiFi network name |
-| `--wifi-pass` | — | WiFi password |
-| `--skip-download` | — | Skip image download if already cached |
+| `--wifi-ssid` | — | Wi-Fi network name |
+| `--wifi-pass` | — | Wi-Fi passphrase |
+| `--skip-download` | — | Reuse a cached OS image |
 
-### 3. Boot & Run First-Boot Setup
-
-After inserting the SD card and powering on the Pi:
+After first boot (about 60 s):
 
 ```bash
-# 1. SSH into the Pi (wait ~60s for first boot)
-ssh axon@axon-command.local      # command node
-ssh axon@axon-room-a.local       # room A node
-ssh axon@axon-room-b.local       # room B node
-
-# 2. Run the first-boot setup script
+ssh axon@axon-command.local
+ssh axon@axon-room-a.local
 sudo bash /boot/firmware/axon-firstboot/setup.sh
 ```
 
-This will automatically:
-- Install all system dependencies (Python, MQTT, Git, etc.)
-- Clone the Axon repo
-- Create a Python venv and install packages
-- Configure and start systemd services for the node's role
-- Set up Reticulum mesh networking
-
-> **Tip:** Monitor progress with `tail -f /var/log/axon-firstboot.log`
-
-### 4. Manual Setup (Alternative)
-
-If you prefer to set up Pis manually instead of using the flasher:
+Manual setup, if you skip the flasher:
 
 ```bash
-# On ALL Pis - common dependencies
 curl -sSL https://raw.githubusercontent.com/jmendoza-10/axon-nervous-system-poc/main/scripts/setup_pi_common.sh | bash
-
-# On Pi #1 - Command node
 curl -sSL https://raw.githubusercontent.com/jmendoza-10/axon-nervous-system-poc/main/scripts/setup_command_node.sh | bash
-
-# On Pi #2 - Room A node
 curl -sSL https://raw.githubusercontent.com/jmendoza-10/axon-nervous-system-poc/main/scripts/setup_room_node.sh | bash -s room_a
-
-# On Pi #3 - Room B node
-curl -sSL https://raw.githubusercontent.com/jmendoza-10/axon-nervous-system-poc/main/scripts/setup_room_node.sh | bash -s room_b
 ```
 
-### 5. Open Dashboard
+Open `http://axon-command.local:5000`. Leave the room during the 20 s calibration delay, then walk back in. The card shows presence, motion, variance, and the scrolling subcarrier heatmap.
 
-Navigate to `http://axon-command.local:5000` in your browser.
-
-The dashboard shows:
-- **Per-room presence/motion badges** with live variance values
-- **Scrolling CSI spectrogram** (64 subcarriers × 60s) — watch for the blue→red shift when someone enters
-- **Live event log** with hash fingerprints
-- **Evidence chain status** (valid record count, or broken-at index if tampered)
-
-## Deploying Updates
+### Deploy updates
 
 ```bash
-# Deploy to all nodes (resets evidence chain on command node)
 bash scripts/deploy.sh all
-
-# Deploy to a single node
 bash scripts/deploy.sh command
 bash scripts/deploy.sh room-a
 bash scripts/deploy.sh room-b
 ```
 
-After deploying to a room node, the Reticulum bridge restarts and must rediscover the command node via its 60-second periodic announce. Detections will be dropped during this ~60s window. This is expected behavior.
-
-## Systemd Services
-
-| Node | Service | Purpose |
-|------|---------|---------|
-| Command | `axon-dashboard` | Flask dashboard + Reticulum receiver |
-| Command | `axon-rnsd` | Reticulum daemon (TCP hub on :4242) |
-| Room | `axon-csi-processor` | UDP → MQTT detection pipeline |
-| Room | `axon-reticulum-bridge` | MQTT → Reticulum forwarding |
+| Node | Service | Role |
+|------|---------|------|
+| Command | `axon-dashboard` | Flask, Socket.IO, Reticulum receiver, evidence log |
+| Command | `axon-rnsd` | Reticulum daemon, TCP hub on port 4242 |
+| Room | `axon-csi-processor` | UDP to MQTT detection |
+| Room | `axon-reticulum-bridge` | MQTT to Reticulum |
 
 ```bash
-# View live logs
-journalctl -u axon-dashboard -f
 journalctl -u axon-csi-processor -f
-journalctl -u axon-reticulum-bridge -f
+journalctl -u axon-dashboard -f
 ```
 
-## Project Structure
+## Project structure
 
 ```
 ├── esp32/
-│   ├── csi_tx/          # ESP32 transmitter firmware (ESP-IDF)
-│   └── csi_rx/          # ESP32 receiver firmware (ESP-IDF)
+│   ├── csi_tx/          # Active transmitter (ESP-IDF, ~100 Hz UDP broadcast)
+│   ├── csi_rx/          # Active receiver (L-LTF CSI → UDP :5500)
+│   └── csi_passive/     # Promiscuous sniffer (L-LTF CSI → UART)
 ├── pi/
-│   ├── room_node/       # Room node software (Pi #2, #3)
-│   │   ├── csi_processor.py      # UDP→MQTT CSI processing + detection
-│   │   └── reticulum_bridge.py   # MQTT→Reticulum forwarding
-│   └── command_node/    # Command node software (Pi #1)
-│       ├── dashboard.py           # Flask + SocketIO + Reticulum receiver
-│       └── templates/index.html   # Live web UI with spectrogram
+│   ├── room_node/
+│   │   ├── csi_processor.py
+│   │   └── reticulum_bridge.py
+│   └── command_node/
+│       ├── dashboard.py
+│       └── templates/index.html
 └── scripts/
-    ├── deploy.sh              # SCP + service restart for all/individual nodes
-    ├── flash_pi_sd.sh         # RPi SD card flasher (macOS/Linux)
-    ├── setup_pi_common.sh     # Base Pi setup
-    ├── setup_room_node.sh     # Room node setup + systemd
-    ├── setup_command_node.sh  # Command node setup + systemd
-    └── flash_esp32.sh         # ESP32 build + flash helper
+    ├── flash_esp32.sh
+    ├── flash_pi_sd.sh
+    ├── passive_serial_bridge.py
+    ├── validate_passive.py
+    ├── deploy.sh
+    └── setup_*.sh
 ```
 
-## Phased Roadmap
-
-- **Phase 1** (current): Active CSI sensing with dedicated ESP32 TX/RX pairs per room
-- **Phase 2**: Passive sniffer mode — single ESP32 monitors existing WiFi traffic
-- **Phase 3**: OpenWrt router CSI extraction — zero additional hardware
-
-## Key Technologies
-
-- **ESP-IDF** + `esp_wifi_set_csi()` — hardware CSI extraction on ESP32-S3
-- **Reticulum** — encrypted, delay-tolerant mesh networking (E2E encryption via X25519 + AES-128)
-- **MQTT (Mosquitto)** — local IPC between processes on each room Pi (not exposed on the network)
-- **Flask + Socket.IO** — real-time web dashboard with live spectrogram
-- **SHA-256 hash chain** — tamper-evident evidence logging with persistence across restarts
+Phase 3 in the original plan — CSI from an OpenWrt access point, with no extra ESP32 — is not in this tree.

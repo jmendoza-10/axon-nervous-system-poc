@@ -20,11 +20,11 @@ menu "CSI Passive Configuration"
 
     config CSI_UDP_TARGET_IP
         string "UDP target IP (Raspberry Pi)"
-        default "192.168.0.226"
+        default "0.0.0.0"
         help
-            IP address of the Raspberry Pi room node. Used when the ESP32
-            has network connectivity (Phase 2b). Ignored in Phase 2a
-            bench-test mode where output goes to UART.
+            IP address of the Raspberry Pi room node. 0.0.0.0 means unset.
+            Set it in menuconfig. Phase 2a prints JSON on UART and does not
+            open a UDP socket; this value is the address for a later UDP path.
 
     config CSI_UDP_TARGET_PORT
         int "UDP target port"

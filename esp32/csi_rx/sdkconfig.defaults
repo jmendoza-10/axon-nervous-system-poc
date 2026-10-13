@@ -3,9 +3,14 @@ CONFIG_ESP_WIFI_CSI_ENABLED=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 
-# Home WiFi — must match TX so both are on same network/channel for CSI
+# Home Wi-Fi — must match the TX board so both sit on the same channel.
+# Replace YOUR_SSID / YOUR_PASSWORD before building:
+#   idf.py menuconfig  →  CSI RX Configuration
+# or pass --wifi-ssid / --wifi-pass to scripts/flash_esp32.sh.
+CONFIG_CSI_RX_SSID="YOUR_SSID"
+CONFIG_CSI_RX_PASSWORD="YOUR_PASSWORD"
 
-# Pi room node IP on home WiFi
-CONFIG_CSI_RX_SSID="SETUP-10EC"
-CONFIG_CSI_RX_PASSWORD="badge5585detail"
-CONFIG_CSI_UDP_TARGET_IP="192.168.0.226"
+# Room Pi address for the CSI UDP stream. 0.0.0.0 means unset.
+# Set it in menuconfig (CSI RX Configuration → UDP target IP)
+# or pass --pi-host to scripts/flash_esp32.sh.
+CONFIG_CSI_UDP_TARGET_IP="0.0.0.0"
